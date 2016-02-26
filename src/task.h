@@ -61,6 +61,41 @@ struct IoWaitData
     CoTimerPtr io_block_timer_;
 };
 
+// 创建协程的源码文件位置
+struct SourceLocation
+{
+    const char* file_ = nullptr;
+    int lineno_ = 0;
+
+    void Init(const char* file, int lineno)
+    {
+        file_ = file, lineno_ = lineno;
+    }
+
+    friend bool operator<(SourceLocation const& lhs, SourceLocation const& rhs)
+    {
+        if (!lhs.file_ && !rhs.file_) return false;
+        if (!lhs.file_) return false;
+        if (!rhs.file_) return true;
+
+        int cmp = strcmp(lhs.file_, rhs.file_);
+        if (cmp != 0) {
+            return cmp == -1 ? true : false;
+        }
+
+        return lhs.lineno_ < rhs.lineno_;
+    }
+
+    std::string to_string() const
+    {
+        std::string s("{file:");
+        if (file_) s += file_;
+        s += ", line:";
+        s += std::to_string(lineno_) + "}";
+        return s;
+    }
+};
+
 struct Task
     : public TSQueueHook
 {
@@ -71,6 +106,7 @@ struct Task
     Context ctx_;
     TaskF fn_;
     std::string debug_info_;
+    SourceLocation location_;
     std::exception_ptr eptr_;           // 保存exception的指针
     std::atomic<uint32_t> ref_count_{1};// 引用计数
 
