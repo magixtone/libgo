@@ -1,80 +1,22 @@
 #pragma once
-#include <unordered_map>
-#include <list>
-#include <sys/epoll.h>
-#include <errno.h>
-#include <string.h>
-#include "config.h"
-#include "context.h"
-#include "task.h"
-#include "block_object.h"
-#include "co_mutex.h"
-#include "timer.h"
+#include <libgo/config.h>
+#include <libgo/context.h>
+#include <libgo/task.h>
+#include <libgo/block_object.h>
+#include <libgo/co_mutex.h>
+#include <libgo/timer.h>
+#include <libgo/sleep_wait.h>
+#include <libgo/processer.h>
+#include <libgo/debugger.h>
 #include "io_wait.h"
-#include "sleep_wait.h"
-#include "processer.h"
 
 namespace co {
 
-// 协程中抛出未捕获异常时的处理方式
-enum class eCoExHandle : uint8_t
-{
-    immedaitely_throw,  // 立即抛出
-    delay_rethrow,      // 延迟到调度器调度时抛出
-    debugger_only,      // 仅打印调试信息
-};
-
-///---- 配置选项
-struct CoroutineOptions
-{
-    /*********************** Debug options **********************/
-    // 调试选项, 例如: dbg_switch 或 dbg_hook|dbg_task|dbg_wait
-    uint64_t debug = 0;            
-
-    // 调试信息输出位置，改写这个配置项可以重定向输出位置
-    FILE* debug_output = stdout;   
-    /************************************************************/
-
-    /**************** Stack and Exception options ***************/
-    // 协程中抛出未捕获异常时的处理方式
-    eCoExHandle exception_handle = eCoExHandle::immedaitely_throw;
-
-    // 协程栈大小上限, 只会影响在此值设置之后新创建的P, 建议在首次Run前设置.
-    // 不开启ENABLE_SHARED_STACK选项时, stack_size建议设置不超过1MB
-    // 不开启ENABLE_SHARED_STACK选项时, Linux系统下, 设置2MB的stack_size会导致提交内存的使用量比1MB的stack_size多10倍.
-    uint32_t stack_size = 1 * 1024 * 1024; 
-
-    // 初始协程栈提交的内存大小(不会低于16bytes).
-    //    设置一个较大的初始栈大小, 可以避免栈内存重分配, 提高性能, 但可能会浪费一部分内存.
-    //    这个值只是用来保存栈内存的内存块初始大小, 即使设置的很大, 栈大小也不会超过stack_size
-    uint32_t init_commit_stack_size = 1024;
-    /************************************************************/
-
-    // P的数量, 首次Run时创建所有P, 随后只能增加新的P不能减少现有的P
-    //    此值越大, 线程间负载均衡效果越好, 但是会增大线程间竞争的开销
-    //    如果使用ENABLE_SHARED_STACK选项, 每个P都会占用stack_size内存.
-    //    建议设置为Run线程数的2-8倍.
-    uint32_t processer_count = 16;
-
-    // 没有协程需要调度时, Run最多休眠的毫秒数(开发高实时性系统可以考虑调低这个值)
-    uint8_t max_sleep_ms = 20;
-
-    // 每个定时器每帧处理的任务数量(为0表示不限, 每帧处理当前所有可以处理的任务)
-    uint32_t timer_handle_every_cycle = 0;
-
-    // epoll每次触发的event数量(Windows下无效)
-    uint32_t epoll_event_size = 1024;
-
-    // 开启当前协程统计功能(会有性能损耗, 默认不开启)
-    bool enable_coro_stat = false;
-};
-///-------------------
-
 struct ThreadLocalInfo
 {
-    Task* current_task = NULL;
-    uint32_t thread_id = 0;     // Run thread index, increment from 1.
+    int thread_id = -1;     // Run thread index, increment from 1.
     uint8_t sleep_ms = 0;
+    Processer *proc = nullptr;
 };
 
 class ThreadPool;
@@ -82,9 +24,19 @@ class ThreadPool;
 class Scheduler
 {
     public:
-//        typedef TSQueue<Task> TaskList;  // 线程安全的协程队列
-        typedef TSSkipQueue<Task> TaskList;  // 线程安全的协程队列
-        typedef TSQueue<Processer> ProcList;
+        // Run时执行的内容
+        enum eRunFlags
+        {
+            erf_do_coroutines   = 0x1,
+            erf_do_timer        = 0x2,
+            erf_do_sleeper      = 0x4,
+            erf_do_eventloop    = 0x8,
+            erf_idle_cpu        = 0x10,
+            erf_signal          = 0x20,
+            erf_all             = 0x7fffffff,
+        };
+
+        typedef std::deque<Processer*> ProcList;
         typedef std::pair<uint32_t, TSQueue<Task, false>> WaitPair;
         typedef std::unordered_map<uint64_t, WaitPair> WaitZone;
         typedef std::unordered_map<int64_t, WaitZone> WaitTable;
@@ -95,8 +47,8 @@ class Scheduler
         CoroutineOptions& GetOptions();
 
         // 创建一个协程
-        void CreateTask(TaskF const& fn, std::size_t stack_size = 0,
-                const char* file = nullptr, int lineno = 0);
+        void CreateTask(TaskF const& fn, std::size_t stack_size,
+                const char* file, int lineno, int dispatch);
 
         // 当前是否处于协程中
         bool IsCoroutine();
@@ -108,7 +60,7 @@ class Scheduler
         void CoYield();
 
         // 调度器调度函数, 内部执行协程、调度协程
-        uint32_t Run();
+        uint32_t Run(int flags = erf_all);
 
         // 循环Run直到没有协程为止
         // @loop_task_count: 不计数的常驻协程.
@@ -147,12 +99,12 @@ class Scheduler
 
         /// ------------------------------------------------------------------------
         // @{ 定时器
-        TimerId ExpireAt(CoTimerMgr::TimePoint const& time_point, CoTimer::fn_t const& fn);
-
-        template <typename Duration>
-        TimerId ExpireAt(Duration const& duration, CoTimer::fn_t const& fn)
+        template <typename DurationOrTimepoint>
+        TimerId ExpireAt(DurationOrTimepoint const& dur_or_tp, CoTimer::fn_t const& fn)
         {
-            return this->ExpireAt(CoTimerMgr::Now() + duration, fn);
+            TimerId id = timer_mgr_.ExpireAt(dur_or_tp, fn);
+            DebugPrint(dbg_timer, "add timer id=%llu", (long long unsigned)id->GetId());
+            return id;
         }
 
         bool CancelTimer(TimerId timer_id);
@@ -182,10 +134,10 @@ class Scheduler
         Scheduler& operator=(Scheduler &&) = delete;
 
         // 将一个协程加入可执行队列中
-        void AddTaskRunnable(Task* tk);
+        void AddTaskRunnable(Task* tk, int dispatch = egod_default);
 
         // Run函数的一部分, 处理runnable状态的协程
-        uint32_t DoRunnable();
+        uint32_t DoRunnable(bool allow_steal = true);
 
         // Run函数的一部分, 处理epoll相关
         int DoEpoll(int wait_milliseconds);
@@ -201,14 +153,12 @@ class Scheduler
         // 获取线程局部信息
         ThreadLocalInfo& GetLocalInfo();
 
+        Processer* GetProcesser(std::size_t index);
+
         // List of Processer
         LFLock proc_init_lock_;
-        uint32_t proc_count = 0;
         ProcList run_proc_list_;
-        ProcList wait_proc_list_;
-
-        // List of task.
-        TaskList run_tasks_;
+        atomic_t<uint32_t> dispatch_robin_index_{0};
 
         // io block waiter.
         IoWait io_wait_;
@@ -220,9 +170,10 @@ class Scheduler
         CoTimerMgr timer_mgr_;
 
         ThreadPool *thread_pool_;
+        LFLock thread_pool_init_;
 
-        std::atomic<uint32_t> task_count_{0};
-        std::atomic<uint32_t> thread_id_{0};
+        atomic_t<uint32_t> task_count_{0};
+        atomic_t<uint32_t> thread_id_{0};
 
     private:
         friend class CoMutex;
@@ -231,9 +182,24 @@ class Scheduler
         friend class SleepWait;
         friend class Processer;
         friend class FileDescriptorCtx;
+        friend class CoDebugger;
 };
 
 } //namespace co
 
 #define g_Scheduler ::co::Scheduler::getInstance()
 
+namespace co
+{
+    inline Scheduler& Scheduler::getInstance()
+    {
+        static Scheduler obj;
+        return obj;
+    }
+
+    inline CoroutineOptions& Scheduler::GetOptions()
+    {
+        return CoroutineOptions::getInstance();
+    }
+
+} //namespace co

@@ -2,9 +2,9 @@
  * Wait for sleep, nanosleep or poll(NULL, 0, timeout)
 *************************************************/
 #pragma once
-#include <vector>
-#include <list>
-#include "task.h"
+#include <libgo/config.h>
+#include <libgo/task.h>
+#include <libgo/debugger.h>
 
 namespace co
 {
@@ -28,6 +28,8 @@ private:
 
     typedef TSQueue<Task> TaskList;
     TaskList wait_tasks_;
+
+    friend class CoDebugger;
 };
 
 

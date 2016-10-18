@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <assert.h>
+#include <signal.h>
 #include "coroutine.h"
 
 static const char* g_ip = "127.0.0.1";
@@ -47,14 +48,13 @@ void echo_server()
             co_chan<bool> err;
 
             go [err, sock_fd] {
-                int buflen = 4096;
-                char *buf = new char[buflen];
+                char *buf = new char[qdata];
                 std::unique_ptr<char[]> _ep(buf);
 
                 int noyield_for_c = 0;
                 for (;;++noyield_for_c) {
 retry_read:
-                    auto n = read(sock_fd, buf, buflen);
+                    auto n = read(sock_fd, buf, qdata);
                     if (n <= 0) {
                         if (errno == EINTR) {
                             printf("trigger EINTR. socket=%d\n", sock_fd);
@@ -96,6 +96,8 @@ goon_write:
 
 int main(int argc, char **argv)
 {
+    sigignore(SIGPIPE);
+
     if (argc > 1) 
         if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
             printf("\n    Usage: %s [ThreadCount] [QueryDataLength]\n", argv[0]);

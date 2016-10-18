@@ -4,10 +4,13 @@
 #include <atomic>
 #include <boost/thread.hpp>
 #include "gtest_exit.h"
+#include <chrono>
 #define private public
-#include "ts_queue.h"
 #include "coroutine.h"
+#include "ts_queue.h"
 using namespace co;
+using namespace std;
+using namespace std::chrono;
 
 struct QueueElem : public TSQueueHook
 {
@@ -23,6 +26,40 @@ TEST(TSQueue, DefaultContructor) {
     TSQueue<QueueElem> tsq; 
     EXPECT_TRUE(tsq.empty());
     EXPECT_EQ(NULL, tsq.pop());
+}
+
+TEST(TSQueue, benchmark) {
+    TSQueue<QueueElem> q; 
+    for (int i = 0; i < 1000; ++i)
+        q.push(new QueueElem);
+
+    int c = 100000;
+    auto s = system_clock::now();
+    for (int i = 0; i < c; ++i)
+    {
+        SList<QueueElem> slist(q.pop_all());
+        auto it = slist.begin();
+        for (; it != slist.end(); ) {
+            QueueElem& p = *it++;
+            (void)p;
+        }
+        q.push(std::move(slist));
+    }
+    auto e = system_clock::now();
+    cout << "pop_all cost " << duration_cast<milliseconds>(e - s).count() << " ms" << endl;
+
+    s = system_clock::now();
+    for (int i = 0; i < c; ++i)
+    {
+        QueueElem* first = (QueueElem*)q.head_->next;
+        while (first) {
+            QueueElem& p = *first;
+            (void)p;
+            first = (QueueElem*)first->next;
+        }
+    }
+    e = system_clock::now();
+    cout << "pop cost " << duration_cast<milliseconds>(e - s).count() << " ms" << endl;
 }
 
 TEST(TSQueue, PushPopOne) {
@@ -71,13 +108,13 @@ TEST(TSQueue, PushPopMulti) {
     }
 
     SList<QueueElem> slist;
-    EXPECT_EQ(slist.size(), 0);
+    EXPECT_EQ(slist.size(), 0u);
     EXPECT_TRUE(slist.empty());
     uint32_t first = 1;
     EXPECT_EQ(id_vec.front(), first);
 
-    slist = q.pop(1);
-    EXPECT_EQ(slist.size(), 1);
+    slist = q.pop_front(1);
+    EXPECT_EQ(slist.size(), 1u);
     EXPECT_FALSE(slist.empty());
     for (auto& elem:slist) {
         uint32_t bak_id = id_vec.front();
@@ -91,8 +128,8 @@ TEST(TSQueue, PushPopMulti) {
     ++first;
     EXPECT_EQ(id_vec.front(), first);
 
-    slist = q.pop(1);
-    EXPECT_EQ(slist.size(), 1);
+    slist = q.pop_front(1);
+    EXPECT_EQ(slist.size(), 1u);
     EXPECT_FALSE(slist.empty());
     for (auto& elem:slist) {
         uint32_t bak_id = id_vec.front();
@@ -104,8 +141,8 @@ TEST(TSQueue, PushPopMulti) {
     ++first;
     EXPECT_EQ(id_vec.front(), first);
 
-    slist = q.pop(2);
-    EXPECT_EQ(slist.size(), 2);
+    slist = q.pop_front(2);
+    EXPECT_EQ(slist.size(), 2u);
     EXPECT_FALSE(slist.empty());
     for (auto& elem:slist) {
         uint32_t bak_id = id_vec.front();
@@ -117,8 +154,8 @@ TEST(TSQueue, PushPopMulti) {
     first += 2;
     EXPECT_EQ(id_vec.front(), first);
 
-    slist = q.pop(3);
-    EXPECT_EQ(slist.size(), 3);
+    slist = q.pop_front(3);
+    EXPECT_EQ(slist.size(), 3u);
     EXPECT_FALSE(slist.empty());
     for (auto& elem:slist) {
         uint32_t bak_id = id_vec.front();
@@ -130,8 +167,8 @@ TEST(TSQueue, PushPopMulti) {
     first += 3;
     EXPECT_EQ(id_vec.front(), first);
 
-    slist = q.pop(94);
-    EXPECT_EQ(slist.size(), 94);
+    slist = q.pop_front(94);
+    EXPECT_EQ(slist.size(), 94u);
     EXPECT_FALSE(slist.empty());
     for (auto& elem:slist) {
         uint32_t bak_id = id_vec.front();
@@ -144,8 +181,8 @@ TEST(TSQueue, PushPopMulti) {
     first %= 100;
     EXPECT_EQ(id_vec.front(), first);
 
-    slist = q.pop(100);
-    EXPECT_EQ(slist.size(), 100);
+    slist = q.pop_front(100);
+    EXPECT_EQ(slist.size(), 100u);
     EXPECT_FALSE(slist.empty());
     EXPECT_TRUE(q.empty());
     for (auto& elem:slist) {
@@ -157,8 +194,8 @@ TEST(TSQueue, PushPopMulti) {
     q.push(std::move(slist));
     EXPECT_EQ(id_vec.front(), first);
 
-    slist = q.pop(101);
-    EXPECT_EQ(slist.size(), 100);
+    slist = q.pop_front(101);
+    EXPECT_EQ(slist.size(), 100u);
     EXPECT_FALSE(slist.empty());
     EXPECT_TRUE(q.empty());
     for (auto& elem:slist) {
@@ -185,75 +222,75 @@ TEST(TSQueue, LFLock) {
 TEST(TSSkipQueueT, pushpop)
 {
     QueueElem::s_id = 0;
-    int n = 10000;
+    size_t n = 10000;
     TSSkipQueue<QueueElem, true, 64> q;
 
     // push
     q.push(new QueueElem);
     EXPECT_TRUE(q.skip_layer_.indexs_.empty());
-    GTEST_ASSERT_EQ(q.size(), 1);
-    EXPECT_EQ(q.skip_layer_.head_offset_, 0);
-    EXPECT_EQ(q.skip_layer_.tail_offset_, 1);
+    GTEST_ASSERT_EQ(q.size(), 1u);
+    EXPECT_EQ(q.skip_layer_.head_offset_, 0u);
+    EXPECT_EQ(q.skip_layer_.tail_offset_, 1u);
 
-    for (int i = 1; i <= 62; ++i)
+    for (size_t i = 1; i <= 62; ++i)
     {
         q.push(new QueueElem);
         EXPECT_TRUE(q.skip_layer_.indexs_.empty());
         GTEST_ASSERT_EQ(q.size(), i + 1);
-        EXPECT_EQ(q.skip_layer_.head_offset_, 0);
+        EXPECT_EQ(q.skip_layer_.head_offset_, 0u);
         EXPECT_EQ(q.skip_layer_.tail_offset_, i + 1);
     }
 
     q.push(new QueueElem);
-    EXPECT_EQ(q.skip_layer_.indexs_.size(), 1);
-    GTEST_ASSERT_EQ(q.size(), 64);
-    EXPECT_EQ(q.skip_layer_.head_offset_, 0);
-    EXPECT_EQ(q.skip_layer_.tail_offset_, 0);
+    EXPECT_EQ(q.skip_layer_.indexs_.size(), 1u);
+    GTEST_ASSERT_EQ(q.size(), 64u);
+    EXPECT_EQ(q.skip_layer_.head_offset_, 0u);
+    EXPECT_EQ(q.skip_layer_.tail_offset_, 0u);
 
     q.push(new QueueElem);
-    EXPECT_EQ(q.skip_layer_.indexs_.size(), 1);
-    GTEST_ASSERT_EQ(q.size(), 65);
-    EXPECT_EQ(q.skip_layer_.head_offset_, 0);
-    EXPECT_EQ(q.skip_layer_.tail_offset_, 1);
+    EXPECT_EQ(q.skip_layer_.indexs_.size(), 1u);
+    GTEST_ASSERT_EQ(q.size(), 65u);
+    EXPECT_EQ(q.skip_layer_.head_offset_, 0u);
+    EXPECT_EQ(q.skip_layer_.tail_offset_, 1u);
 
-    for (int i = 66; i <= n; ++i)
+    for (size_t i = 66; i <= n; ++i)
     {
         q.push(new QueueElem);
-        EXPECT_EQ(q.skip_layer_.indexs_.size(), i / 64);
+        EXPECT_EQ(q.skip_layer_.indexs_.size(), i / 64u);
         GTEST_ASSERT_EQ(q.size(), i);
-        EXPECT_EQ(q.skip_layer_.head_offset_, 0);
-        EXPECT_EQ(q.skip_layer_.tail_offset_, i % 64);
+        EXPECT_EQ(q.skip_layer_.head_offset_, 0u);
+        EXPECT_EQ(q.skip_layer_.tail_offset_, i % 64u);
     }
 
     // pop
-    SList<QueueElem> s = q.pop(1);
-    EXPECT_EQ(s.begin()->id_, 1);
-    EXPECT_EQ(q.skip_layer_.indexs_.size(), n / 64);
+    SList<QueueElem> s = q.pop_front(1);
+    EXPECT_EQ(s.begin()->id_, 1u);
+    EXPECT_EQ(q.skip_layer_.indexs_.size(), n / 64u);
     GTEST_ASSERT_EQ(q.size(), n - 1);
-    EXPECT_EQ(q.skip_layer_.head_offset_, 1);
-    EXPECT_EQ(q.skip_layer_.tail_offset_, n % 64);
+    EXPECT_EQ(q.skip_layer_.head_offset_, 1u);
+    EXPECT_EQ(q.skip_layer_.tail_offset_, n % 64u);
 
-    s = q.pop(62);
-    int c = 2;
+    s = q.pop_front(62);
+    size_t c = 2;
     for (auto &elem : s)
     {
         EXPECT_EQ(elem.id_, c);
         c++;
     }
-    EXPECT_EQ(q.skip_layer_.indexs_.size(), n / 64);
+    EXPECT_EQ(q.skip_layer_.indexs_.size(), n / 64u);
     GTEST_ASSERT_EQ(q.size(), n - 63);
-    EXPECT_EQ(q.skip_layer_.head_offset_, 63);
-    EXPECT_EQ(q.skip_layer_.tail_offset_, n % 64);
+    EXPECT_EQ(q.skip_layer_.head_offset_, 63u);
+    EXPECT_EQ(q.skip_layer_.tail_offset_, n % 64u);
 
-    s = q.pop(1);
+    s = q.pop_front(1);
     EXPECT_EQ(s.begin()->id_, c);
     c++;
     GTEST_ASSERT_EQ(q.size(), n - 64);
     EXPECT_EQ(q.skip_layer_.indexs_.size(), n / 64 - 1);
-    EXPECT_EQ(q.skip_layer_.head_offset_, 0);
+    EXPECT_EQ(q.skip_layer_.head_offset_, 0u);
     EXPECT_EQ(q.skip_layer_.tail_offset_, n % 64);
 
-    s = q.pop(n);
+    s = q.pop_front(n);
     EXPECT_EQ(s.size(), n - 64);
     for (auto &elem : s)
     {
@@ -261,22 +298,22 @@ TEST(TSSkipQueueT, pushpop)
         c++;
     }
     EXPECT_TRUE(q.skip_layer_.indexs_.empty());
-    GTEST_ASSERT_EQ(q.size(), 0);
-    EXPECT_EQ(q.skip_layer_.head_offset_, 0);
-    EXPECT_EQ(q.skip_layer_.tail_offset_, 0);
+    GTEST_ASSERT_EQ(q.size(), 0u);
+    EXPECT_EQ(q.skip_layer_.head_offset_, 0u);
+    EXPECT_EQ(q.skip_layer_.tail_offset_, 0u);
 
-    for (int i = 0; i < 100; ++i)
+    for (size_t i = 0; i < 100; ++i)
     {
-        for (int j = 0; j < n; ++j)
+        for (size_t j = 0; j < n; ++j)
         {
             QueueElem *p = new QueueElem(j);
             GTEST_ASSERT_EQ(p->id_, j);
             q.push(p);
         }
         GTEST_ASSERT_EQ(q.size(), n);
-        s = q.pop(-1);
-        GTEST_ASSERT_EQ(q.size(), 0);
-        int j = 0;
+        s = q.pop_front(-1);
+        GTEST_ASSERT_EQ(q.size(), 0u);
+        size_t j = 0;
         for (auto &elem : s)
         {
             EXPECT_EQ(elem.id_, j);
@@ -304,7 +341,7 @@ TEST(TSSkipQueueT, MultipleThread)
     tg.create_thread([=, &q] {
                 int c = 0;
                 for (; c < n * thread_c;) {
-                    SList<QueueElem> s = q.pop(1000);
+                    SList<QueueElem> s = q.pop_front(1000);
                     c += s.size();
                 }
                 EXPECT_EQ(c, n * thread_c);
@@ -331,7 +368,7 @@ TEST(TSSkipQueueT, Bm)
     tg.create_thread([=, &q] {
                 int c = 0;
                 for (; c < n * thread_c;) {
-                    SList<QueueElem> s = q.pop(1000);
+                    SList<QueueElem> s = q.pop_front(1000);
                     c += s.size();
                 }
                 EXPECT_EQ(c, n * thread_c);
@@ -367,7 +404,7 @@ TEST(CompareQueues, TSSkipQueueTest)
     {
         tg.create_thread([&q] {
                     for (;;) {
-                        SList<QueueElem> s = q.pop(step_dis);
+                        SList<QueueElem> s = q.pop_front(step_dis);
                         if (s.empty()) break;
                     }
                 });
@@ -389,7 +426,7 @@ TEST(CompareQueues, TSQueueTest)
     {
         tg.create_thread([&q] {
                     for (;;) {
-                        SList<QueueElem> s = q.pop(step_dis);
+                        SList<QueueElem> s = q.pop_front(step_dis);
                         if (s.empty()) break;
                         usleep(10000);
                     }
@@ -415,34 +452,34 @@ TEST(Ref, TsQueueRef)
 {
     {
         TestRef * ptr = new TestRef;
-        EXPECT_EQ(TestRef::s_count, 1);
-        EXPECT_EQ(ptr->reference_, 1);
+        EXPECT_EQ(TestRef::s_count, 1u);
+        EXPECT_EQ(ptr->reference_, 1u);
         TSQueue<TestRef> q;
         q.push(ptr);
-        EXPECT_EQ(ptr->reference_, 2);
+        EXPECT_EQ(ptr->reference_, 2u);
         TestRef * out = q.pop();
-        EXPECT_EQ(ptr->reference_, 1);
+        EXPECT_EQ(ptr->reference_, 1u);
         out->DecrementRef();
-        EXPECT_EQ(TestRef::s_count, 0);
+        EXPECT_EQ(TestRef::s_count, 0u);
     }
 
     {
         TestRef * ptr = new TestRef;
-        EXPECT_EQ(TestRef::s_count, 1);
-        EXPECT_EQ(ptr->reference_, 1);
+        EXPECT_EQ(TestRef::s_count, 1u);
+        EXPECT_EQ(ptr->reference_, 1u);
         TSQueue<TestRef> q;
         q.push(ptr);
-        EXPECT_EQ(ptr->reference_, 2);
+        EXPECT_EQ(ptr->reference_, 2u);
         q.erase(ptr);
-        EXPECT_EQ(ptr->reference_, 1);
+        EXPECT_EQ(ptr->reference_, 1u);
         ptr->DecrementRef();
-        EXPECT_EQ(TestRef::s_count, 0);
+        EXPECT_EQ(TestRef::s_count, 0u);
     }
 
     {
-        const int n = 128;
+        const size_t n = 128;
         TSQueue<TestRef> q;
-        for (int i = 0; i < n; ++i)
+        for (size_t i = 0; i < n; ++i)
             q.push(new TestRef);
         EXPECT_EQ(TestRef::s_count, n);
         SList<TestRef> slist = q.pop_all();
@@ -451,22 +488,22 @@ TEST(Ref, TsQueueRef)
             elem.DecrementRef();
         EXPECT_EQ(TestRef::s_count, n);
         slist.clear();
-        EXPECT_EQ(TestRef::s_count, 0);
+        EXPECT_EQ(TestRef::s_count, 0u);
     }
 
     {
-        const int n = 128;
+        const size_t n = 128;
         TSQueue<TestRef> q;
-        for (int i = 0; i < n; ++i)
+        for (size_t i = 0; i < n; ++i)
             q.push(new TestRef);
         EXPECT_EQ(TestRef::s_count, n);
-        SList<TestRef> slist = q.pop(28);
+        SList<TestRef> slist = q.pop_front(28);
         EXPECT_EQ(TestRef::s_count, n);
         for (auto &elem : slist)
             elem.DecrementRef();
         EXPECT_EQ(TestRef::s_count, n);
         slist.clear();
-        EXPECT_EQ(TestRef::s_count, 100);
+        EXPECT_EQ(TestRef::s_count, 100u);
         q.push(q.pop_all());
         q.push(q.pop_all());
         q.push(q.pop_all());
@@ -474,44 +511,44 @@ TEST(Ref, TsQueueRef)
         slist = q.pop_all();
         for (auto &elem : slist)
             elem.DecrementRef();
-        EXPECT_EQ(TestRef::s_count, 100);
+        EXPECT_EQ(TestRef::s_count, 100u);
     }
 }
 
 TEST(Ref, TsSkipQueueRef)
 {
     {
-        const int n = 128;
+        const size_t n = 128;
         TSSkipQueue<TestRef> q;
-        for (int i = 0; i < n; ++i)
+        for (size_t i = 0; i < n; ++i)
             q.push(new TestRef);
         EXPECT_EQ(TestRef::s_count, n);
-        SList<TestRef> slist = q.pop(128);
+        SList<TestRef> slist = q.pop_front(128);
         EXPECT_EQ(TestRef::s_count, n);
         for (auto &elem : slist)
             elem.DecrementRef();
         EXPECT_EQ(TestRef::s_count, n);
         slist.clear();
-        EXPECT_EQ(TestRef::s_count, 0);
+        EXPECT_EQ(TestRef::s_count, 0u);
     }
 
     {
-        const int n = 128;
+        const size_t n = 128;
         TSSkipQueue<TestRef> q;
-        for (int i = 0; i < n; ++i)
+        for (size_t i = 0; i < n; ++i)
             q.push(new TestRef);
         EXPECT_EQ(TestRef::s_count, n);
-        SList<TestRef> slist = q.pop(28);
+        SList<TestRef> slist = q.pop_front(28);
         EXPECT_EQ(TestRef::s_count, n);
         for (auto &elem : slist)
             elem.DecrementRef();
         EXPECT_EQ(TestRef::s_count, n);
         slist.clear();
-        EXPECT_EQ(TestRef::s_count, 100);
-        slist = q.pop(100);
+        EXPECT_EQ(TestRef::s_count, 100u);
+        slist = q.pop_front(100);
         for (auto &elem : slist)
             elem.DecrementRef();
-        EXPECT_EQ(TestRef::s_count, 100);
+        EXPECT_EQ(TestRef::s_count, 100u);
     }
 }
 

@@ -1,5 +1,5 @@
-#include "error.h"
-#include "scheduler.h"
+#include <libgo/error.h>
+#include <libgo/scheduler.h>
 
 namespace co
 {
@@ -35,6 +35,17 @@ std::string co_error_category::message(int v) const
 
         case (int)eCoErrorCode::ec_iocpinit_failed:
             return "iocp init failed";
+
+        case (int)eCoErrorCode::ec_protect_stack_failed:
+            return "protect stack failed";
+
+        case (int)eCoErrorCode::ec_std_thread_link_error:
+            return "std thread link error.\n"
+                "if static-link use flags: '-Wl,--whole-archive -lpthread -Wl,--no-whole-archive -static' on link step;\n"
+                "if dynamic-link use flags: '-pthread' on compile step and link step;\n";
+
+        case (int)eCoErrorCode::ec_disabled_multi_thread:
+            return "Unsupport multiply threads. If you want use multiply threads, please cmake libgo without DISABLE_MULTI_THREAD option.";
     }
 
     return "";

@@ -1,6 +1,6 @@
-#include "block_object.h"
-#include "scheduler.h"
-#include "error.h"
+#include <libgo/block_object.h>
+#include <libgo/scheduler.h>
+#include <libgo/error.h>
 #include <unistd.h>
 #include <mutex>
 #include <limits>
@@ -42,7 +42,7 @@ void BlockObject::CoBlockWait()
     }
     lock.unlock();
 
-    Task* tk = g_Scheduler.GetLocalInfo().current_task;
+    Task* tk = g_Scheduler.GetCurrentTask();
     tk->block_ = this;
     tk->state_ = TaskState::sys_block;
 	tk->block_timeout_ = MininumTimeDurationType::zero();
@@ -54,11 +54,11 @@ void BlockObject::CoBlockWait()
 
 bool BlockObject::CoBlockWaitTimed(MininumTimeDurationType timeo)
 {
-    auto begin = std::chrono::high_resolution_clock::now();
+    auto begin = std::chrono::steady_clock::now();
     if (!g_Scheduler.IsCoroutine()) {
         while (!TryBlockWait() &&
 				std::chrono::duration_cast<MininumTimeDurationType>
-                (std::chrono::high_resolution_clock::now() - begin) < timeo)
+                (std::chrono::steady_clock::now() - begin) < timeo)
             usleep(10 * 1000);
         return false;
     }
@@ -71,7 +71,7 @@ bool BlockObject::CoBlockWaitTimed(MininumTimeDurationType timeo)
     }
     lock.unlock();
 
-    Task* tk = g_Scheduler.GetLocalInfo().current_task;
+    Task* tk = g_Scheduler.GetCurrentTask();
     tk->block_ = this;
     tk->state_ = TaskState::sys_block;
     ++tk->block_sequence_;
@@ -112,7 +112,8 @@ bool BlockObject::Wakeup()
 
     tk->block_ = nullptr;
     if (tk->block_timer_) { // block cancel timer必须在lock之外, 因为里面会lock
-        g_Scheduler.BlockCancelTimer(tk->block_timer_);
+        if (g_Scheduler.BlockCancelTimer(tk->block_timer_))
+            tk->DecrementRef();
         tk->block_timer_.reset();
     }
     DebugPrint(dbg_syncblock, "wakeup task(%s).", tk->DebugInfo());

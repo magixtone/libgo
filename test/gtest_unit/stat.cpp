@@ -18,7 +18,7 @@ TEST(stat, stat)
         };
 
     auto m = co::Task::GetStatInfo();
-    EXPECT_EQ(m.size(), 2);
+    EXPECT_EQ(m.size(), 2u);
     for (auto &kv : m)
     {
         printf("location:%s, count:%u\n", kv.first.to_string().c_str(), kv.second);
@@ -29,10 +29,12 @@ TEST(stat, stat)
 
     {
         auto m = co::Task::GetStatInfo();
-        EXPECT_EQ(m.size(), 1);
+        EXPECT_EQ(m.size(), 1u);
         for (auto &kv : m)
         {
             printf("location:%s, count:%u\n", kv.first.to_string().c_str(), kv.second);
         }
     }
+
+    printf("AllInfo:\n%s\n", co_debugger.GetAllInfo().c_str());
 }

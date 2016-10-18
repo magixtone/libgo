@@ -1,4 +1,4 @@
-#if !defined(_WIN32)
+#if __linux__
 #include <unistd.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <time.h>
-#include "linux_glibc_hook.h"
+#include <libgo/linux_glibc_hook.h>
 #endif
 
 namespace co {
@@ -20,7 +20,7 @@ namespace co {
 
 } //namespace co
 
-#if !defined(_WIN32)
+#if __linux__
 
 extern "C" {
 

@@ -1,7 +1,5 @@
 #pragma once
-#include <memory>
-#include <atomic>
-#include <type_traits>
+#include <libgo/config.h>
 
 namespace co
 {
@@ -22,7 +20,7 @@ struct fake_lock_guard
 // 侵入式引用计数对象基类
 struct RefObject
 {
-    std::atomic<long> reference_;
+    atomic_t<long> reference_;
 
     RefObject() : reference_{1} {}
     virtual ~RefObject() {}
@@ -110,5 +108,36 @@ public:
 private:
     RefObject *ptr_;
 };
+///////////////////////////////////////
+
+// 创建协程的源码文件位置
+struct SourceLocation
+{
+    const char* file_ = nullptr;
+    int lineno_ = 0;
+
+    void Init(const char* file, int lineno)
+    {
+        file_ = file, lineno_ = lineno;
+    }
+
+    friend bool operator<(SourceLocation const& lhs, SourceLocation const& rhs)
+    {
+        if (lhs.file_ != rhs.file_)
+            return lhs.file_ < rhs.file_;
+
+        return lhs.lineno_ < rhs.lineno_;
+    }
+
+    std::string to_string() const
+    {
+        std::string s("{file:");
+        if (file_) s += file_;
+        s += ", line:";
+        s += std::to_string(lineno_) + "}";
+        return s;
+    }
+};
+
 
 } //namespace co

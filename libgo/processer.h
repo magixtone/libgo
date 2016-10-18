@@ -1,6 +1,7 @@
 #pragma once
-#include "task.h"
-#include "ts_queue.h"
+#include <libgo/config.h>
+#include <libgo/task.h>
+#include <libgo/ts_queue.h>
 
 namespace co {
 
@@ -8,31 +9,31 @@ struct ThreadLocalInfo;
 
 // 协程执行器
 //   管理一批协程的共享栈和调度, 非线程安全.
-class Processer : public TSQueueHook
+class Processer
+    : public TSQueueHook
 {
 private:
     typedef TSQueue<Task> TaskList;
 
-    uint32_t id_;
-    char *shared_stack_ = NULL;
-    uint32_t shared_stack_cap_ = 0;
-    std::atomic<uint32_t> task_count_{0};
+    Task* current_task_ = nullptr;
     TaskList runnable_list_;
-
-    static std::atomic<uint32_t> s_id_;
+    uint32_t id_;
+    static atomic_t<uint32_t> s_id_;
 
 public:
-    explicit Processer(uint32_t stack_size);
-
-    ~Processer();
+    explicit Processer();
 
     void AddTaskRunnable(Task *tk);
 
-    uint32_t Run(ThreadLocalInfo &info, uint32_t &done_count);
+    uint32_t Run(uint32_t &done_count);
 
-    void CoYield(ThreadLocalInfo &info);
+    void CoYield();
 
     uint32_t GetTaskCount();
+
+    Task* GetCurrentTask();
+
+    std::size_t StealHalf(Processer & other);
 };
 
 } //namespace co

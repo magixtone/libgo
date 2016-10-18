@@ -1,9 +1,7 @@
 #pragma once
-#include <mutex>
-#include <assert.h>
-#include <deque>
-#include "util.h"
-#include "spinlock.h"
+#include <libgo/config.h>
+#include <libgo/util.h>
+#include <libgo/spinlock.h>
 
 namespace co
 {
@@ -84,7 +82,7 @@ public:
 
     iterator begin() { return iterator{head_}; }
     iterator end() { return iterator(); }
-    inline bool empty() const { return head_ == nullptr; }
+    ALWAYS_INLINE bool empty() const { return head_ == nullptr; }
     iterator erase(iterator it)
     {
         T* ptr = (it++).ptr;
@@ -116,9 +114,9 @@ public:
         count_ = 0;
     }
 
-    inline TSQueueHook* head() { return head_; }
-    inline TSQueueHook* tail() { return tail_; }
-    inline bool check(void *c) { return check_ == c; }
+    ALWAYS_INLINE TSQueueHook* head() { return head_; }
+    ALWAYS_INLINE TSQueueHook* tail() { return tail_; }
+    ALWAYS_INLINE bool check(void *c) { return check_ == c; }
 };
 
 // 线程安全的队列(支持随机删除)
@@ -127,7 +125,8 @@ class TSQueue
 {
     static_assert((std::is_base_of<TSQueueHook, T>::value), "T must be baseof TSQueueHook");
 
-private:
+//private:
+public:
     LFLock lck;
     typedef typename std::conditional<ThreadSafe,
             std::lock_guard<LFLock>,
@@ -135,12 +134,14 @@ private:
     TSQueueHook* head_;
     TSQueueHook* tail_;
     std::size_t count_;
+    void *check_ = nullptr;
 
 public:
     TSQueue()
     {
         head_ = tail_ = new TSQueueHook;
         count_ = 0;
+        check_ = this;
     }
 
     ~TSQueue()
@@ -155,32 +156,32 @@ public:
         head_ = tail_ = 0;
     }
 
-    bool empty()
+    ALWAYS_INLINE bool empty()
     {
         LockGuard lock(lck);
         return head_ == tail_;
     }
 
-    std::size_t size()
+    ALWAYS_INLINE std::size_t size()
     {
         LockGuard lock(lck);
         return count_;
     }
 
-    void push(T* element)
+    ALWAYS_INLINE void push(T* element)
     {
         LockGuard lock(lck);
         TSQueueHook *hook = static_cast<TSQueueHook*>(element);
         tail_->next = hook;
         hook->prev = tail_;
         hook->next = nullptr;
-        hook->check_ = this;
+        hook->check_ = check_;
         tail_ = hook;
         ++ count_;
         IncrementRef(element);
     }
 
-    T* pop()
+    ALWAYS_INLINE T* pop()
     {
         if (head_ == tail_) return nullptr;
         LockGuard lock(lck);
@@ -196,10 +197,10 @@ public:
         return (T*)ptr;
     }
 
-    void push(SList<T> && elements)
+    ALWAYS_INLINE void push(SList<T> && elements)
     {
         if (elements.empty()) return ;  // empty的SList不能check, 因为stealed的时候已经清除check_.
-        assert(elements.check(this));
+        assert(elements.check(check_));
         LockGuard lock(lck);
         count_ += elements.size();
         tail_->next = elements.head();
@@ -210,7 +211,7 @@ public:
     }
 
     // O(n), 慎用.
-    SList<T> pop(uint32_t n)
+    ALWAYS_INLINE SList<T> pop_front(uint32_t n)
     {
         if (head_ == tail_) return SList<T>();
         LockGuard lock(lck);
@@ -225,10 +226,27 @@ public:
         if (last->next) last->next->prev = head_;
         first->prev = last->next = nullptr;
         count_ -= c;
-        return SList<T>(first, last, c, this);
+        return SList<T>(first, last, c, check_);
     }
 
-    SList<T> pop_all()
+    // O(n), 慎用.
+    ALWAYS_INLINE SList<T> pop_back(uint32_t n)
+    {
+        if (head_ == tail_) return SList<T>();
+        LockGuard lock(lck);
+        if (head_ == tail_) return SList<T>();
+        TSQueueHook* last = tail_;
+        TSQueueHook* first = last;
+        uint32_t c = 1;
+        for (; c < n && first->prev && first->prev != head_; ++c)
+            first = first->prev;
+        tail_ = first->prev;
+        first->prev = tail_->next = nullptr;
+        count_ -= c;
+        return SList<T>(first, last, c, check_);
+    }
+
+    ALWAYS_INLINE SList<T> pop_all()
     {
         if (head_ == tail_) return SList<T>();
         LockGuard lock(lck);
@@ -240,14 +258,13 @@ public:
         first->prev = last->next = nullptr;
         std::size_t c = count_;
         count_ = 0;
-        return SList<T>(first, last, c, this);
+        return SList<T>(first, last, c, check_);
     }
 
-
-    bool erase(T* hook)
+    ALWAYS_INLINE bool erase(T* hook)
     {
         LockGuard lock(lck);
-        if (hook->check_ != (void*)this) return false;
+        if (hook->check_ != (void*)check_) return false;
         if (hook->prev) hook->prev->next = hook->next;
         if (hook->next) hook->next->prev = hook->prev;
         else if (hook == tail_) tail_ = tail_->prev;
@@ -337,14 +354,14 @@ public:
         }
     }
 
-    SList<T> pop(std::size_t n)
+    SList<T> pop_front(std::size_t n)
     {
         if (head_ == tail_ || !n) return SList<T>();
         LockGuard lock(lck);
         if (head_ == tail_) return SList<T>();
         TSQueueHook* first = head_->next;
         TSQueueHook* last = first;
-        n = std::min(n, count_);
+        n = (std::min)(n, count_);
         std::size_t next_step = n - 1;
 
         // 从跳表上查找
@@ -379,6 +396,5 @@ public:
         return SList<T>(first, last, n, this);
     }
 };
-
 
 } //namespace co

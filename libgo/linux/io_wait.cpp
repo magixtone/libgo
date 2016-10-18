@@ -1,16 +1,25 @@
 #include "io_wait.h"
 #include <sys/epoll.h>
-#include "scheduler.h"
+#include <libgo/scheduler.h>
+#include <signal.h>
 
 namespace co
 {
 
 IoWait::IoWait()
 {
-    loop_index_ = 0;
     epoll_event_size_ = 1024;
-    epoll_owner_pid_ = 0;
-    epoll_fd_ = -1;
+}
+
+int& IoWait::EpollFdRef()
+{
+    thread_local static int epoll_fd = -1;
+    return epoll_fd;
+}
+pid_t& IoWait::EpollOwnerPid()
+{
+    thread_local static pid_t owner_pid = -1;
+    return owner_pid;
 }
 
 static uint32_t PollEvent2Epoll(short events)
@@ -40,6 +49,7 @@ static std::string EpollEvent2Str(uint32_t events)
     if (events & EPOLLOUT) e += "POLLOUT|";
     if (events & EPOLLHUP) e += "POLLHUP|";
     if (events & EPOLLERR) e += "POLLERR|";
+    if (events & EPOLLET) e += "EPOLLET|";
     return e;
 }
 
@@ -67,9 +77,10 @@ void IoWait::CoSwitch()
 
 void IoWait::SchedulerSwitch(Task* tk)
 {
-    wait_io_sentries_.push(tk->io_sentry_.get()); // A
-    if (tk->io_sentry_->io_state_ == IoSentry::triggered) // B
-        __IOBlockTriggered(tk->io_sentry_);
+    auto sentry = tk->io_sentry_;   // reference increment. avoid wakeup task at other thread.
+    wait_io_sentries_.push(sentry.get()); // A
+    if (sentry->io_state_ == IoSentry::triggered) // B
+        __IOBlockTriggered(sentry);
 }
 
 void IoWait::IOBlockTriggered(IoSentryPtr io_sentry)
@@ -88,13 +99,15 @@ void IoWait::__IOBlockTriggered(IoSentryPtr io_sentry)
     }
 }
 
-int IoWait::reactor_ctl(int epoll_ctl_mod, int fd, uint32_t poll_events, bool is_socket)
+int IoWait::reactor_ctl(int epollfd, int epoll_ctl_mod, int fd,
+        uint32_t poll_events, bool is_support, bool et_mode)
 {
-    if (is_socket) {
+    if (is_support) {
         epoll_event ev;
         ev.events = PollEvent2Epoll(poll_events);
+        if (et_mode) ev.events |= EPOLLET;
         ev.data.fd = fd;
-        int res = epoll_ctl(GetEpollFd(), epoll_ctl_mod, fd, &ev);
+        int res = epoll_ctl(epollfd, epoll_ctl_mod, fd, &ev);
         DebugPrint(dbg_ioblock, "epoll_ctl(fd:%d, MOD:%s, events:%s) returns %d",
                 fd, EpollMod2Str(epoll_ctl_mod),
                 EpollEvent2Str(ev.events).c_str(), res);
@@ -111,12 +124,8 @@ int IoWait::WaitLoop(int wait_milliseconds)
         return -1;
 
     // TODO: epoll多线程触发, poll单线程触发.
-    std::unique_lock<LFLock> lock(epoll_lock_, std::defer_lock);
-    if (!lock.try_lock())
-        return -1;
 
-    ++loop_index_;
-    static epoll_event *evs = new epoll_event[epoll_event_size_];
+    thread_local static epoll_event *evs = new epoll_event[epoll_event_size_];
 
 retry:
     int n = epoll_wait(GetEpollFd(), evs, epoll_event_size_, wait_milliseconds);
@@ -138,7 +147,7 @@ retry:
         FdCtxPtr fd_ctx = FdManager::getInstance().get_fd_ctx(fd);
         DebugPrint(dbg_ioblock, "epoll trigger fd(%d) events(%s) has_ctx(%d)",
                 fd, EpollEvent2Str(evs[i].events).c_str(), !!fd_ctx);
-        assert(fd_ctx); // 必须有context, 否则就是close流程出问题了.
+        if (!fd_ctx) continue;
 
         // 暂存, 最后再执行Trigger, 以便于poll可以得到更多的事件触发.
         fd_ctx->reactor_trigger(EpollEvent2Poll(evs[i].events), triggers);
@@ -158,25 +167,30 @@ retry:
 int IoWait::GetEpollFd()
 {
     CreateEpoll();
-    return epoll_fd_;
+    return EpollFdRef();
 }
 
 void IoWait::CreateEpoll()
 {
     pid_t pid = getpid();
-    if (epoll_owner_pid_ == pid) return ;
+    pid_t& epoll_owner_pid = EpollOwnerPid();
+    if (epoll_owner_pid == pid) return ;
     std::unique_lock<LFLock> lock(epoll_create_lock_);
-    if (epoll_owner_pid_ == pid) return ;
+    if (epoll_owner_pid == pid) return ;
 
-    epoll_owner_pid_ = pid;
+    epoll_owner_pid = pid;
     epoll_event_size_ = g_Scheduler.GetOptions().epoll_event_size;
 
+    int & epoll_fd_ = EpollFdRef();
     if (epoll_fd_ >= 0)
         close(epoll_fd_);
 
     epoll_fd_ = epoll_create(epoll_event_size_);
-    if (epoll_fd_ != -1)
+    if (epoll_fd_ != -1) {
         DebugPrint(dbg_ioblock, "create epoll success. epollfd=%d", epoll_fd_);
+        // 使用epoll需要忽略SIGPIPE信号
+        IgnoreSigPipe();
+    }
     else {
         fprintf(stderr,
                 "CoroutineScheduler init failed. epoll create error:%s\n",
@@ -185,9 +199,15 @@ void IoWait::CreateEpoll()
     }
 }
 
-bool IoWait::IsEpollCreated() const
+void IoWait::IgnoreSigPipe()
 {
-    return epoll_owner_pid_ == getpid();
+    DebugPrint(dbg_ioblock, "Ignore signal SIGPIPE");
+    sigignore(SIGPIPE);
+}
+
+bool IoWait::IsEpollCreated()
+{
+    return EpollFdRef() != -1 && EpollOwnerPid() == getpid();
 }
 
 } //namespace co

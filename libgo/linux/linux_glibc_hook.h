@@ -84,8 +84,26 @@ extern dup2_t dup2_f;
 typedef int(*dup3_t)(int, int, int);
 extern dup3_t dup3_f;
 
+// DNS by libcares
+// gethostent
+// gethostbyname
+// gethostbyname2
+// gethostbyname_r
+// gethostbyname2_r
+// gethostbyaddr
+// gethostbyaddr_r
+
 } //extern "C"
 
 namespace co {
     extern void set_connect_timeout(int milliseconds);
+    extern void initialize_socket_async_methods(int socketfd);
+
+    // libgo提供的协程版epoll_wait接口
+    extern int libgo_epoll_wait(int epfd, struct epoll_event *events,
+            int maxevents, int timeout);
+
+    // 设置ET模式
+    extern void set_et_mode(int fd);
+
 } //namespace co

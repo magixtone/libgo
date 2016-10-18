@@ -1,66 +1,88 @@
-#include "task.h"
+#include <libgo/task.h>
 #include <iostream>
 #include <string.h>
 #include <string>
 #include <algorithm>
-#include "scheduler.h"
+#include <libgo/scheduler.h>
 
 namespace co
 {
 
+std::string GetTaskStateName(TaskState state)
+{
+    static const char* names[] = 
+    {
+        "init",
+        "runnable",
+        "io_block",
+        "sys_block",
+        "sleep",
+        "done",
+        "fatal",
+    };
+    if ((std::size_t)state >= sizeof(names)/sizeof(const char*))
+        return "unkown";
+
+    return names[(int)state];
+}
+
 uint64_t Task::s_id = 0;
-std::atomic<uint64_t> Task::s_task_count{0};
+atomic_t<uint64_t> Task::s_task_count{0};
 
 LFLock Task::s_stat_lock;
 std::set<Task*> Task::s_stat_set;
 
-static void C_func(Task* self)
+void Task::Task_CB()
 {
     if (g_Scheduler.GetOptions().exception_handle == eCoExHandle::immedaitely_throw) {
-        (self->fn_)();
+        fn_();
+        fn_ = TaskF();  // 让协程function对象的析构也在协程中执行
     } else {
         try {
-            (self->fn_)();
+            fn_();
+            fn_ = TaskF();
         } catch (std::exception& e) {
+            fn_ = TaskF();
             switch (g_Scheduler.GetOptions().exception_handle) {
                 case eCoExHandle::immedaitely_throw:
                     throw ;
                     break;
 
                 case eCoExHandle::delay_rethrow:
-                    self->eptr_ = std::current_exception();
+                    eptr_ = std::current_exception();
                     break;
 
                 default:
                 case eCoExHandle::debugger_only:
                     DebugPrint(dbg_exception|dbg_task, "task(%s) has uncaught exception:%s",
-                            self->DebugInfo(), e.what());
+                            DebugInfo(), e.what());
                     break;
             }
         } catch (...) {
+            fn_ = TaskF();
             switch (g_Scheduler.GetOptions().exception_handle) {
                 case eCoExHandle::immedaitely_throw:
                     throw ;
                     break;
 
                 case eCoExHandle::delay_rethrow:
-                    self->eptr_ = std::current_exception();
+                    eptr_ = std::current_exception();
                     break;
 
                 default:
                 case eCoExHandle::debugger_only:
-                    DebugPrint(dbg_exception|dbg_task, "task(%s) has uncaught exception.", self->DebugInfo());
+                    DebugPrint(dbg_exception|dbg_task, "task(%s) has uncaught exception.", DebugInfo());
                     break;
             }
         }
     }
 
-    self->state_ = TaskState::done;
+    state_ = TaskState::done;
     Scheduler::getInstance().CoYield();
 }
 
 Task::Task(TaskF const& fn, std::size_t stack_size, const char* file, int lineno)
-    : id_(++s_id), ctx_(stack_size, [this]{C_func(this);}), fn_(fn)
+    : id_(++s_id), ctx_(stack_size, [this]{Task_CB();}), fn_(fn)
 {
     ++s_task_count;
     InitLocation(file, lineno);
@@ -91,29 +113,6 @@ void Task::InitLocation(const char* file, int lineno)
         std::unique_lock<LFLock> lock(s_stat_lock);
         s_stat_set.insert(this);
     }
-}
-
-void Task::AddIntoProcesser(Processer *proc, char* shared_stack, uint32_t shared_stack_cap)
-{
-    assert(!proc_);
-    proc_ = proc;
-    if (!ctx_.Init(shared_stack, shared_stack_cap)) {
-        state_ = TaskState::fatal;
-        fprintf(stderr, "task(%s) init, getcontext error:%s\n",
-                DebugInfo(), strerror(errno));
-        return ;
-    }
-
-    state_ = TaskState::runnable;
-}
-
-bool Task::SwapIn()
-{
-    return ctx_.SwapIn();
-}
-bool Task::SwapOut()
-{
-    return ctx_.SwapOut();
 }
 
 void Task::SetDebugInfo(std::string const& info)
@@ -147,6 +146,20 @@ std::map<SourceLocation, uint32_t> Task::GetStatInfo()
     for (auto tk : s_stat_set)
     {
         ++result[tk->location_];
+    }
+    return result;
+}
+std::vector<std::map<SourceLocation, uint32_t>> Task::GetStateInfo()
+{
+    std::vector<std::map<SourceLocation, uint32_t>> result;
+    result.resize((int)TaskState::fatal + 1);
+    if (!Scheduler::getInstance().GetOptions().enable_coro_stat)
+        return result;
+
+    std::unique_lock<LFLock> lock(s_stat_lock);
+    for (auto tk : s_stat_set)
+    {
+        ++result[(int)tk->state_][tk->location_];
     }
     return result;
 }
